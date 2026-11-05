@@ -65,6 +65,15 @@ MY_APP_API_KEY=xyz123
 
 Restart the app after changing its env (dashboard Restart button, or `POST /api/apps/<name>/restart`).
 
+## Leak prevention — API keys on GitHub
+
+Real secrets must never reach the repo. The rules:
+
+- `.env` files are gitignored and **never committed** — only `.env.example` with placeholders (`your-key-here`, `demo-...`) goes to GitHub.
+- On Render, secrets live in the service dashboard's Environment tab (or as `<APPNAME>_<KEY>` hub vars), never in a file.
+- **Before every push, run:** `python3 scripts/check-secrets.py <files you are pushing>` — it fails if a `.env` is in the list or if any file holds a real-looking key/token. Note: the push helper pushes explicitly named files and does **not** respect `.gitignore`, so this check is the real protection, not the ignore file.
+- If a real key ever does get pushed by mistake: revoke/rotate that key immediately — deleting the file from GitHub later does not un-leak it (git history keeps it).
+
 ## API
 
 - `GET /health` — `{"ok":true,"hub":"test-hub","apps":N,...}`
