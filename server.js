@@ -42,6 +42,75 @@ function log(app, line) {
   console.log(app ? '[' + app.name + '] ' + line : line);
 }
 
+// ---------- env handling ----------
+// Precedence for a Node child (PORT always wins — the hub assigns it):
+//   1. hub process env — local: hub .env / shell; Render: dashboard env vars
+//   2. prefixed hub vars: <APPNAME>_<KEY> reaches that app only as <KEY>
+//      e.g. DEMO_NODE_API_KEY=... arrives in demo-node as API_KEY
+//   3. the app's own apps/<name>/.env file (highest, except PORT)
+// Env VALUES are never logged, never returned by any API, and .env files
+// are never served as static files — only key NAMES are shown.
+function parseDotEnv(text) {
+  const out = {};
+  for (const raw of String(text).split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    let v = m[2].trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    out[m[1]] = v;
+  }
+  return out;
+}
+function loadHubEnv() {
+  const p = path.join(__dirname, '.env');
+  if (!fs.existsSync(p)) return;
+  try {
+    const vars = parseDotEnv(fs.readFileSync(p, 'utf8'));
+    for (const [k, v] of Object.entries(vars)) if (!(k in process.env)) process.env[k] = v;
+  } catch (e) { console.log('hub .env could not be read: ' + e.message); }
+}
+loadHubEnv();
+
+function appEnv(app) {
+  const env = { ...process.env };
+  const prefix = app.name.toUpperCase().replace(/-/g, '_') + '_';
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith(prefix)) env[k.slice(prefix.length)] = v;
+  }
+  const dotEnvPath = path.join(app.dir, '.env');
+  if (fs.existsSync(dotEnvPath)) {
+    try { Object.assign(env, parseDotEnv(fs.readFileSync(dotEnvPath, 'utf8'))); }
+    catch (e) { log(app, '.env could not be read: ' + e.message); }
+  }
+  env.PORT = String(app.port);
+  return env;
+}
+
+function scanRequiredEnv(app) {
+  const found = new Set();
+  const re = /process\.env\.([A-Za-z0-9_]+)|process\.env\[['"]([A-Za-z0-9_]+)['"]\]/g;
+  let files = [];
+  try { files = fs.readdirSync(app.dir).filter((f) => f.endsWith('.js')); } catch (e) {}
+  for (const f of files) {
+    try {
+      const src = fs.readFileSync(path.join(app.dir, f), 'utf8');
+      let m; while ((m = re.exec(src))) found.add(m[1] || m[2]);
+    } catch (e) {}
+  }
+  found.delete('PORT');
+  return [...found].sort();
+}
+
+function envSummary(app) {
+  if (app.type !== 'node') return { required: [], present: [], missing: [] };
+  const env = appEnv(app);
+  const required = scanRequiredEnv(app);
+  const present = required.filter((k) => env[k] !== undefined && env[k] !== '');
+  return { required, present, missing: required.filter((k) => !present.includes(k)) };
+}
+
 function isValidName(name) {
   return /^[a-z0-9][a-z0-9-]{0,30}$/.test(name);
 }
@@ -123,14 +192,17 @@ function startNodeApp(app) {
 
   const run = () => {
     app.status = 'starting';
+    const summary = envSummary(app);
     const child = spawn('node', [entry], {
       cwd: app.dir,
-      env: { ...process.env, PORT: String(app.port) },
+      env: appEnv(app),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     app.child = child;
     app.lastStart = new Date().toISOString();
-    log(app, 'started: node ' + entry + ' on port ' + app.port);
+    log(app, 'started: node ' + entry + ' on port ' + app.port
+      + ' | env: ' + (summary.present.join(', ') || 'none')
+      + (summary.missing.length ? ' | MISSING: ' + summary.missing.join(', ') : ''));
     child.stdout.on('data', (d) => String(d).split('\n').filter(Boolean).forEach((l) => log(app, l)));
     child.stderr.on('data', (d) => String(d).split('\n').filter(Boolean).forEach((l) => log(app, '[err] ' + l)));
     child.on('exit', (code) => {
@@ -194,6 +266,10 @@ const MIME = {
 function serveStatic(app, urlPath, res) {
   let rel = decodeURIComponent(urlPath || '/').split('?')[0];
   if (rel === '/' || rel === '') rel = '/index.html';
+  // Never serve dotfiles (.env, .git, ...) — env files must stay private.
+  if (rel.split('/').some((p) => p.startsWith('.') && p !== '.' && p !== '..')) {
+    return sendText(res, 404, 'Not found');
+  }
   const safe = path.normalize(path.join(app.dir, rel));
   if (!safe.startsWith(app.dir)) return sendText(res, 403, 'Forbidden');
   fs.stat(safe, (err, st) => {
@@ -265,7 +341,7 @@ function publicApp(a) {
     name: a.name, type: a.type, port: a.type === 'node' ? a.port : null,
     status: a.status, url: '/apps/' + a.name + '/',
  lastStart: a.lastStart,
-    error: a.error, logs: a.logs.length,
+    error: a.error, logs: a.logs.length, env: envSummary(a),
   };
 }
 
@@ -302,7 +378,7 @@ async function load(){
   const r=await fetch('/api/apps'); const d=await r.json();
   const g=document.getElementById('grid');
   if(!d.apps.length){g.innerHTML='<p style="color:#9aa0b5">No apps yet. Add one below, or drop a folder into <code>apps/</code> and refresh.</p>';return;}
-  g.innerHTML=d.apps.map(a=>'<div class="card"><div class="tag">'+a.type+' · '+(a.port?'port '+a.port:'no process')+'</div><h2>'+a.name+'</h2><div><span class="dot '+a.status+'"></span>'+a.status+(a.error?' — '+a.error:'')+'</div><div class="row"><a class="btn primary" href="'+a.url+'" target="_blank">Open</a>'+(a.type==='node'?'<button onclick="act(\''+a.name+'\',\'restart\')">Restart</button><button onclick="act(\''+a.name+'\',\'stop\')">Stop</button>':'')+'<button onclick="logs(\''+a.name+'\')">Logs</button></div><pre class="logs" id="logs-'+a.name+'"></pre></div>').join('');
+  g.innerHTML=d.apps.map(a=>'<div class="card"><div class="tag">'+a.type+' · '+(a.port?'port '+a.port:'no process')+'</div><h2>'+a.name+'</h2><div><span class="dot '+a.status+'"></span>'+a.status+(a.error?' — '+a.error:'')+'</div>'+(a.env&&a.env.required.length?'<div style="color:#9aa0b5;font-size:13px;margin-top:4px">Env: '+(a.env.present.join(', ')||'none')+(a.env.missing.length?' · <span style="color:#f59e0b">missing: '+a.env.missing.join(', ')+'</span>':'')+'</div>':'')+'<div class="row"><a class="btn primary" href="'+a.url+'" target="_blank">Open</a>'+(a.type==='node'?'<button onclick="act(\''+a.name+'\',\'restart\')">Restart</button><button onclick="act(\''+a.name+'\',\'stop\')">Stop</button>':'')+'<button onclick="logs(\''+a.name+'\')">Logs</button></div><pre class="logs" id="logs-'+a.name+'"></pre></div>').join('');
 }
 async function act(name,action){await fetch('/api/apps/'+name+'/'+action,{method:'POST'});setTimeout(load,1200);}
 async function logs(name){const el=document.getElementById('logs-'+name);const r=await fetch('/api/apps/'+name+'/logs');const d=await r.json();el.style.display='block';el.textContent=d.lines.join('\\n')||'(no logs yet)';}

@@ -44,6 +44,27 @@ cp -r ~/my-node-app ~/workspace/test-hub/apps/my-node-app
 
 No restart of the hub needed — it rescans `apps/` on every request. Node apps start automatically when first detected.
 
+## Environment variables
+
+Every Node sub-server gets its env from 3 layers (later wins, `PORT` always wins — the hub assigns it, never set it yourself):
+
+1. **Hub env** — local: `test-hub/.env` or shell vars; on Render: the hub service's dashboard Environment tab. Shared by all apps.
+2. **Prefixed hub vars** — `<APPNAME>_<KEY>` reaches only that app as `<KEY>`. Example: hub var `DEMO_NODE_API_KEY=xyz` arrives in `demo-node` as `API_KEY=xyz`. This is the way to give secrets on Render, where there is no per-app dashboard.
+3. **App `.env` file** — `apps/<name>/.env`, highest priority. Local testing ke liye best. **Never commit a real `.env`** — `.gitignore` already blocks `.env` and `apps/*/.env`. Commit a `.env.example` instead, with dummy values, so the next person knows what is needed.
+
+The dashboard shows, per app, which env keys its code needs (it scans `process.env.X` in the app's `.js` files) and which are missing — **key names only, values are never shown, logged, or returned by the API**. Static serving never returns dotfiles, so a `.env` sitting in a static app folder cannot be downloaded via the hub.
+
+Example — an app that needs an API key:
+
+```sh
+# apps/my-app/.env  (local only, gitignored)
+API_KEY=xyz123
+# or, as a hub var (works on Render too):
+MY_APP_API_KEY=xyz123
+```
+
+Restart the app after changing its env (dashboard Restart button, or `POST /api/apps/<name>/restart`).
+
 ## API
 
 - `GET /health` — `{"ok":true,"hub":"test-hub","apps":N,...}`
