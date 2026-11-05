@@ -375,14 +375,17 @@ footer{color:#9aa0b5;font-size:13px;margin-top:28px;line-height:1.7}
 <footer>How apps are detected: <code>index.html</code> only → static, served by the hub. <code>server.js</code> (or <code>package.json</code> main) → Node child process on its own port, hub reverse-proxies <code>/apps/&lt;name&gt;/</code> to it. A Node app reads its port from <code>process.env.PORT</code> — never hard-code a port. Static apps need no process at all.<br>Note: this hub runs on this machine only (<code>localhost:${HUB_PORT}</code>). To open it from your phone, deploy this same folder to Render — it already reads <code>$PORT</code>.</footer>
 </main><script>
 async function load(){
-  const r=await fetch('/api/apps'); const d=await r.json();
   const g=document.getElementById('grid');
+  try{
+  const r=await fetch('/api/apps'); if(!r.ok) throw new Error('HTTP '+r.status); const d=await r.json();
   if(!d.apps.length){g.innerHTML='<p style="color:#9aa0b5">No apps yet. Add one below, or drop a folder into <code>apps/</code> and refresh.</p>';return;}
-  g.innerHTML=d.apps.map(a=>'<div class="card"><div class="tag">'+a.type+' · '+(a.port?'port '+a.port:'no process')+'</div><h2>'+a.name+'</h2><div><span class="dot '+a.status+'"></span>'+a.status+(a.error?' — '+a.error:'')+'</div>'+(a.env&&a.env.required.length?'<div style="color:#9aa0b5;font-size:13px;margin-top:4px">Env: '+(a.env.present.join(', ')||'none')+(a.env.missing.length?' · <span style="color:#f59e0b">missing: '+a.env.missing.join(', ')+'</span>':'')+'</div>':'')+'<div class="row"><a class="btn primary" href="'+a.url+'" target="_blank">Open</a>'+(a.type==='node'?'<button onclick="act(\''+a.name+'\',\'restart\')">Restart</button><button onclick="act(\''+a.name+'\',\'stop\')">Stop</button>':'')+'<button onclick="logs(\''+a.name+'\')">Logs</button></div><pre class="logs" id="logs-'+a.name+'"></pre></div>').join('');
+  g.innerHTML=d.apps.map(a=>'<div class="card"><div class="tag">'+a.type+' · '+(a.port?'port '+a.port:'no process')+'</div><h2>'+a.name+'</h2><div><span class="dot '+a.status+'"></span>'+a.status+(a.error?' — '+a.error:'')+'</div>'+(a.env&&a.env.required.length?'<div style="color:#9aa0b5;font-size:13px;margin-top:4px">Env: '+(a.env.present.join(', ')||'none')+(a.env.missing.length?' · <span style="color:#f59e0b">missing: '+a.env.missing.join(', ')+'</span>':'')+'</div>':'')+'<div class="row"><a class="btn primary" href="'+a.url+'" target="_blank">Open</a>'+(a.type==='node'?'<button data-app="'+a.name+'" data-action="restart">Restart</button><button data-app="'+a.name+'" data-action="stop">Stop</button>':'')+'<button data-app="'+a.name+'" data-action="logs">Logs</button></div><pre class="logs" id="logs-'+a.name+'"></pre></div>').join('');
+  }catch(e){ g.innerHTML='<p style="color:#f59e0b">Could not load apps: '+e.message+'. <button onclick="load()">Retry</button></p>'; }
 }
 async function act(name,action){await fetch('/api/apps/'+name+'/'+action,{method:'POST'});setTimeout(load,1200);}
 async function logs(name){const el=document.getElementById('logs-'+name);const r=await fetch('/api/apps/'+name+'/logs');const d=await r.json();el.style.display='block';el.textContent=d.lines.join('\\n')||'(no logs yet)';}
 document.getElementById('cloneForm').addEventListener('submit',async e=>{e.preventDefault();const m=document.getElementById('cloneMsg');m.textContent='Cloning…';const r=await fetch('/api/apps/clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:document.getElementById('repo').value})});const d=await r.json();m.textContent=d.ok?('Added: '+d.app.name):('Error: '+(d.error||'failed'));if(d.ok)load();});
+document.getElementById('grid').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;if(b.dataset.action==='logs')logs(b.dataset.app);else act(b.dataset.app,b.dataset.action);});
 load();setInterval(load,10000);
 </script></body></html>`;
 }
